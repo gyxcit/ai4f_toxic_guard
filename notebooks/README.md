@@ -1,57 +1,60 @@
 # Notebooks
 
-This folder contains the three Jupyter notebooks that reproduce the full
+This folder contains the four Jupyter notebooks that reproduce the full
 pipeline from raw data to publication figures.
 
 ---
 
 ## Files
 
-| Notebook | Inputs | Outputs | Wall-clock |
+| Notebook | Role | Inputs | Outputs |
 |---|---|---|---|
-| `01_data_pipeline.ipynb` | `data/uniswap_dune.parquet`, `data/binance_eth_usdt_1h.parquet` | `data/aligned_data.parquet` | ~2 min |
-| `02_train_and_evaluate.ipynb` | `data/aligned_data.parquet`, `data/rolling_windows.parquet` | `results/results_final.csv`, `results/learning_curves.csv`, `results/actions_log_R5.csv`, 35 PPO checkpoints in `models/` | ~6.5 hours on 2× T4 GPU |
-| `03_analysis_and_figures.ipynb` | `results/results_final.csv` | `results/cvar_results.csv`, `figures/fig1_cvar.pdf` through `fig4_corr.pdf` | ~2 min |
+| `ai4fi-data.ipynb` | Data pipeline | Raw Uniswap (Dune) and Binance klines | `aligned_data.parquet` with all 4 toxicity scores precomputed |
+| `ai4f-space.ipynb` | Environment + training (preliminary) | `aligned_data.parquet` | Initial PPO training experiments on a subset of windows |
+| `aif4-space2.ipynb` | Full ablation training | `aligned_data.parquet`, `rolling_windows.parquet` | 105 PPO runs (7 configs × 5 windows × 3 seeds), per-run results CSV, 35 trained checkpoints |
+| `aif4-space-figure.ipynb` | Statistical analysis and figures | Per-run CSV from `aif4-space2.ipynb` | The four publication figures (PDF + PNG, 300 DPI), Pearson correlation matrix between toxicity scores |
 
 ---
 
-## How to run
+## Recommended execution order
 
-### Option 1 — Full pipeline from scratch
-
-```bash
-pip install -r requirements.txt
-jupyter notebook notebooks/01_data_pipeline.ipynb
-# then 02_train_and_evaluate.ipynb
-# then 03_analysis_and_figures.ipynb
+```
+1. ai4fi-data.ipynb           ← run once to build aligned_data.parquet
+2. aif4-space2.ipynb          ← the main 105-run ablation (~6.5h on 2× T4)
+3. aif4-space-figure.ipynb    ← post-hoc analysis and figures (~2 min)
 ```
 
-### Option 2 — Skip data pipeline (recommended)
-
-`aligned_data.parquet` is already provided in `data/`. You can therefore
-start directly with `02_train_and_evaluate.ipynb`.
-
-### Option 3 — Skip training (figures only)
-
-This requires `results/results_final.csv` (released upon acceptance). With
-that file in place, `03_analysis_and_figures.ipynb` regenerates all figures
-in approximately 2 minutes.
+The notebook `ai4f-space.ipynb` is preserved for transparency: it documents
+the preliminary single-window experiments used to validate the environment
+design and PPO hyperparameters before the full ablation. It is not required
+to reproduce the paper's results.
 
 ---
 
-## `01_data_pipeline.ipynb` — what it does
+## Quick reproduction
 
-1. Loads raw Uniswap v3 hourly aggregates (Dune Analytics extract)
-2. Loads Binance ETHUSDT 1h klines
-3. Aligns both series on UTC hour
+```bash
+pip install -r ../requirements.txt
+jupyter notebook ai4fi-data.ipynb
+# then aif4-space2.ipynb
+# then aif4-space-figure.ipynb
+```
+
+---
+
+## `ai4fi-data.ipynb` — what it does
+
+1. Loads raw Uniswap v3 hourly aggregates from Dune Analytics
+2. Loads Binance ETHUSDT 1h spot klines
+3. Aligns both series on UTC hour boundaries
 4. Computes 24h and 7d rolling volatilities from Binance log-returns
 5. Computes the four toxicity scores defined in Section 4 of the paper
 6. Drops rows with NaN in critical columns
-7. Writes `aligned_data.parquet`
+7. Writes `aligned_data.parquet` (24,019 hourly rows)
 
 ---
 
-## `02_train_and_evaluate.ipynb` — what it does
+## `aif4-space2.ipynb` — what it does
 
 The main notebook. Trains 105 PPO agents using the following grid:
 
@@ -74,52 +77,68 @@ clip_range       = 0.2
 ent_coef         = 0.01
 policy_kwargs    = MLP [128, 128]
 total_timesteps  = 80,000
-device           = cuda:0 (R1–R4) / cuda:1 (R5–R7)
 ```
 
-Two T4 GPUs are dispatched in parallel via `concurrent.futures.ThreadPoolExecutor`.
-Intermediate progress is written to `results/results_checkpoint.csv` after
-each completed run, allowing safe resumption from interruption.
+Two T4 GPUs are dispatched in parallel via
+`concurrent.futures.ThreadPoolExecutor`: configurations R1–R4 run on
+`cuda:0` and R5–R7 on `cuda:1`. Intermediate progress is written to
+`results_checkpoint.csv` after each completed run, allowing safe resumption
+from interruption.
 
-The notebook also logs:
+The notebook also logs, for the held-out test episodes:
 
-- Episode rewards per training step (for learning curves)
-- Action-toxicity correlations on the held-out test window for R5_volsize
-  (the r = +0.41 figure cited in the paper)
+- Episode rewards per training step (used for learning curves)
+- Action–toxicity correlations on R5_volsize (the r = +0.41 figure cited
+  in the paper)
 
 ---
 
-## `03_analysis_and_figures.ipynb` — what it does
+## `aif4-space-figure.ipynb` — what it does
 
-1. Loads `results_final.csv` (105 rows: window × config × seed)
+1. Loads the per-run results from `aif4-space2.ipynb`
 2. Aggregates per configuration: mean, std, win count, win rate
 3. Runs Fisher exact tests on win rates (vs R1_baseline)
 4. Runs Welch t-tests on mean excess return (vs R1_baseline)
 5. Computes CVaR$_{10\%}$ and CVaR$_{25\%}$ per configuration
-6. Decomposes performance by dominant market regime
-7. Generates the four publication figures (PDF + PNG, 300 DPI)
-8. Outputs the LaTeX table for Section 6 of the paper
+6. Decomposes performance by dominant market regime (calm / normal /
+   stressed)
+7. Computes the pairwise Pearson correlation matrix between the four
+   toxicity scores on the full 24,019-hour dataset
+8. Generates the four publication figures (PDF + PNG, 300 DPI)
+
+---
+
+## `ai4f-space.ipynb` — what it does (preliminary)
+
+A scaled-down version of `aif4-space2.ipynb` covering a single rolling
+window (W1) and a single seed, used to validate the environment design
+(`UniswapV3LPEnvBaseline` and `UniswapV3LPEnvToxicityAware`) and to
+calibrate the PPO hyperparameters before the full 105-run ablation. Not
+required to reproduce the paper's reported numbers.
 
 ---
 
 ## Compute requirements
 
 - Python 3.10+ with the packages in `../requirements.txt`
-- For `02_train_and_evaluate.ipynb`: 2× NVIDIA T4 GPU recommended
+- For `aif4-space2.ipynb`: 2× NVIDIA T4 GPU recommended
   (Kaggle free tier provides this out of the box). Single GPU works but
   doubles the wall-clock time.
-- For `01` and `03`: any CPU is sufficient
+- For `ai4fi-data.ipynb` and `aif4-space-figure.ipynb`: any CPU is sufficient
+
+A single PPO training run takes approximately 7 minutes on a T4 GPU; the
+full 105-run ablation completes in approximately 6.5 hours on two T4 GPUs.
 
 ---
 
 ## Tips for reproducing on Kaggle
 
 1. Create a new Kaggle notebook
-2. Attach the four datasets from `data/` as input
+2. Attach the four datasets from `../data/` as input
 3. Set Accelerator → "GPU T4 ×2"
 4. Set Persistence → "Variables and Files"
 5. Run all cells; intermediate checkpoints are saved automatically
 
-If the session is interrupted, the resume cell at the top of
-`02_train_and_evaluate.ipynb` will detect existing entries in
+If the Kaggle session is interrupted, the resume cell at the top of
+`aif4-space2.ipynb` will detect existing entries in
 `results_checkpoint.csv` and skip already-completed runs.
